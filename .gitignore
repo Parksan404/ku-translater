@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.transfer/
+input/
+test-results/
+playwright-report/
+/training/
+/ku-translater.zip
