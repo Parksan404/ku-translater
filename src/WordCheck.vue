@@ -46,15 +46,15 @@ function apply(suggestion, replacement) {
 </script>
 
 <template>
-  <section class="word-check">
-    <h1>เดาคำภาษาอังกฤษ</h1>
+  <div class="page-heading"><div><h1>เดาคำภาษาอังกฤษ</h1></div></div>
+  <section class="panel word-check">
     <label for="word-check-input">ข้อความที่ถอดได้</label>
     <textarea id="word-check-input" v-model="input" rows="7" maxlength="4000"
       placeholder="เช่น IDENITTY หรือ RES?NANCE" spellcheck="false" @input="reset"/>
-    <button type="button" class="button" :disabled="busy || !input.trim()" @click="check">
+    <button type="button" class="button primary" :disabled="busy || !input.trim()" @click="check">
       {{ busy ? 'กำลังค้นคำ' : 'เดาคำ' }}
     </button>
-    <p v-if="error" role="alert">{{ error }}</p>
+    <p v-if="error" class="error" role="alert">{{ error }}</p>
     <div v-if="checked && suggestions.length" class="word-suggestions">
       <strong>คำที่เป็นไปได้ · กดเพื่อแทนที่</strong>
       <div v-for="suggestion in suggestions" :key="suggestion.index">
@@ -67,11 +67,3 @@ function apply(suggestion, replacement) {
   </section>
 </template>
 
-<style scoped>
-.word-check { max-width: 760px; margin: 0 auto; padding: 24px; }
-.word-check h1 { margin: 0 0 20px; }
-.word-check label { display: block; margin-bottom: 8px; }
-.word-check textarea { display: block; width: 100%; padding: 12px; margin-bottom: 12px; border: 1px solid #cbd5bf; border-radius: 5px; font: inherit; resize: vertical; }
-.word-check .word-suggestions { font-size: 14px; }
-.word-check .word-suggestions > div { justify-content: flex-start; }
-</style>

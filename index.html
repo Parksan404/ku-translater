@@ -1,1 +1,26 @@
-<!doctype html><html lang="th"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="theme-color" content="#f6f7f3"><title>KU Translate · อ่านภาษาจากภาพ</title></head><body><div id="app"></div><script type="module" src="/src/main.js"></script></body></html>
+<!doctype html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#f4f5fb">
+    <meta name="color-scheme" content="light dark">
+    <title>KU Translate — ถอดข้อความจากภาพ</title>
+    <script>
+      (() => {
+        const root = document.documentElement
+        let saved
+        try { saved = localStorage.getItem('ku-translate-theme') } catch {}
+        if (saved === 'dark' || saved === 'light') root.dataset.themePreference = saved
+        root.dataset.theme = root.dataset.themePreference ||
+          (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+        document.querySelector('meta[name="theme-color"]').content =
+          root.dataset.theme === 'dark' ? '#10121b' : '#f4f5fb'
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
