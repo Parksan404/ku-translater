@@ -79,6 +79,27 @@ function matchCase(word, original) {
   return /^[A-Z]/.test(original) ? lower[0].toUpperCase() + lower.slice(1) : lower
 }
 
+function splitCandidates(word, costs, glyphs, offset, known, candidates) {
+  if (word.length < 6) return
+  let variants = [{ spelling: '', score: 0 }]
+  for (const letters of costs) {
+    variants = variants.flatMap(({ spelling, score }) => letters.flatMap((cost, letter) =>
+      cost <= .6 && score + cost <= .95
+        ? [{ spelling: spelling + String.fromCharCode(65 + letter), score: score + cost }]
+        : [],
+    )).sort((a, b) => a.score-b.score).slice(0, 32)
+  }
+  for (const { spelling, score } of variants) {
+    for (let split = 3; split <= spelling.length - 3; split++) {
+      const first = spelling.slice(0, split), second = spelling.slice(split)
+      if (!known.has(first) || !known.has(second)) continue
+      const previous = glyphs.get(offset + split - 1), next = glyphs.get(offset + split)
+      const gap = previous && next ? (next.left - previous.left - previous.width) / Math.max(1, next.height) : 0
+      candidates.push({ candidate: first + ' ' + second, score: score + (gap > .18 ? .2 : .65) })
+    }
+  }
+}
+
 export async function suggestWords(text, lines = []) {
   const { byLength, known } = await loadDictionary()
   const glyphs = glyphsByIndex(lines)
@@ -97,6 +118,7 @@ export async function suggestWords(text, lines = []) {
       const rows = Array.from({ length: word.length + 1 }, () => new Float64Array(word.length + 3))
       const limit = word.length >= 8 ? 1.9 : word.length >= 5 ? 1.45 : 1.05
       const candidates = []
+      splitCandidates(word, costs, glyphs, index, known, candidates)
       for (let length = word.length - 1; length <= word.length + 1; length++) {
         for (const candidate of byLength.get(length) ?? []) {
           const score = editCost(word, candidate, costs, rows)

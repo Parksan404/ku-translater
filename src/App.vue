@@ -78,11 +78,18 @@ async function run() {
     const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(r.w*scale));canvas.height=Math.max(1,Math.round(r.h*scale))
     const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(source.value,r.x,r.y,r.w,r.h,0,0,canvas.width,canvas.height)
     const value=await recognize(canvas,{fontId:fontId.value,polarity:polarity.value,threshold:Number(threshold.value),spacing:Number(spacing.value),cleanup:cleanup.value},v=>progress.value=v)
-    if(current===generation){result.value=value;output.value=value.text;rawOutput.value=value.text}
-    if(value.cleanup==='game'){
-      try{const suggestions=await suggestWords(value.text, value.lines);if(current===generation)wordSuggestions.value=suggestions}catch{/* OCR remains usable if optional dictionary cannot load. */}
-    }
+    if (current !== generation) return
+    result.value=value;output.value=value.text;rawOutput.value=value.text
+    await refreshWordSuggestions()
   }catch(e){if(current===generation)error.value=e.message}finally{busy.value=false}
+}
+async function refreshWordSuggestions() {
+  const current = generation
+  const text = output.value
+  try {
+    const suggestions = await suggestWords(text, result.value?.lines)
+    if (current === generation && output.value === text) wordSuggestions.value = suggestions
+  } catch { /* The decoded text remains available if the dictionary fails to load. */ }
 }
 function applySuggestion(suggestion, replacement) {
   if(output.value.slice(suggestion.index,suggestion.index+suggestion.original.length)!==suggestion.original){wordSuggestions.value=[];return}
@@ -103,6 +110,8 @@ function replaceGlyph(character) {
   cell.character=character
   output.value=result.value.lines.map(line=>line.map(c=>(c.space?' ':'')+c.character).join('')).join('\n')
   selectedGlyph.value=null
+  wordSuggestions.value=[]
+  refreshWordSuggestions()
 }
 </script>
 
