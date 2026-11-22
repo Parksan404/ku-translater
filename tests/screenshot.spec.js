@@ -26,3 +26,11 @@ test('reads both text sizes inside a dark sign frame',async({page})=>{
   await page.locator('.translate-button').click()
   await expect(page.locator('#output')).toHaveValue('HELLO WORLD\nTEST',{timeout:30000})
 })
+
+test('reads both words from the same blurry Federation sign crop', async ({ page }) => {
+  await page.goto('/')
+  await page.getByLabel('อัปโหลดรูปภาพ').setInputFiles(fileURLToPath(new URL('./fixtures/blurry-highway-crop.png', import.meta.url)))
+  await page.locator('#font').selectOption('font-1')
+  await page.locator('.translate-button').click()
+  await expect(page.locator('#output')).toHaveValue('HIGHWAY TUNNEL', { timeout: 20000 })
+})

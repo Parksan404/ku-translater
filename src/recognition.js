@@ -61,6 +61,65 @@ function insetSign(gray, width, height, offset) {
   return {width,height,pixels,cleanup:'plain', framed:true}
 }
 
+function localContrast(gray, width, height, light, offset) {
+  const stride = width + 1
+  const integral = new Float64Array(stride * (height + 1))
+  for (let y = 0; y < height; y++) {
+    let row = 0
+    for (let x = 0; x < width; x++) {
+      row += gray[y * width + x]
+      integral[(y + 1) * stride + x + 1] = integral[y * stride + x + 1] + row
+    }
+  }
+
+  const radius = Math.max(6, Math.round(height * .2))
+  const direction = light ? 1 : -1
+  const cutoff = Math.max(2, 7 + (light ? offset : -offset))
+  const pixels = new Uint8Array(gray.length)
+  for (let y = 0; y < height; y++) {
+    const top = Math.max(0, y - radius)
+    const bottom = Math.min(height, y + radius + 1)
+    for (let x = 0; x < width; x++) {
+      const left = Math.max(0, x - radius)
+      const right = Math.min(width, x + radius + 1)
+      const sum = integral[bottom * stride + right] - integral[bottom * stride + left]
+        - integral[top * stride + right] + integral[top * stride + left]
+      const background = sum / ((bottom - top) * (right - left))
+      const index = y * width + x
+      pixels[index] = direction * (gray[index] - background) >= cutoff
+    }
+  }
+
+  // Remove long sign borders and underlines before finding the text rows.
+  const seen = new Uint8Array(pixels.length)
+  for (let start = 0; start < pixels.length; start++) {
+    if (!pixels[start] || seen[start]) continue
+    const component = [start]
+    seen[start] = 1
+    let left = width, right = 0, top = height, bottom = 0
+    for (const index of component) {
+      const x = index % width, y = Math.floor(index / width)
+      left = Math.min(left, x); right = Math.max(right, x)
+      top = Math.min(top, y); bottom = Math.max(bottom, y)
+      for (const next of [x > 0 ? index - 1 : -1, x < width - 1 ? index + 1 : -1, index - width, index + width]) {
+        if (!pixels[next] || seen[next]) continue
+        seen[next] = 1
+        component.push(next)
+      }
+    }
+    const w = right - left + 1, h = bottom - top + 1
+    const horizontalRule = w > Math.max(height * .35, h * 7)
+    const nearSide = left < radius || right >= width - radius
+    const verticalBorder = nearSide && h > height * .8 && h > w * 5
+    const frame = w > width * .8 && h > height * .8 && (top === 0 || bottom === height - 1)
+    if (component.length < 3 || horizontalRule || verticalBorder || frame) {
+      for (const index of component) pixels[index] = 0
+    }
+  }
+
+  return { width, height, pixels, cleanup: 'contrast', polarity: light ? 'light' : 'dark' }
+}
+
 export function binarize(image, mode = 'auto', offset = 0, cleanup = 'auto') {
   const { width, height, data } = image
   const gray = new Uint8Array(width * height)
@@ -76,11 +135,12 @@ export function binarize(image, mode = 'auto', offset = 0, cleanup = 'auto') {
     if (sign) return sign
   }
   if(suppressRed) for(let i=0;i<gray.length;i++)gray[i]=Math.round((data[i*4+1]+data[i*4+2])*.5)
-  const threshold = Math.min(254, Math.max(0, otsu(gray) + offset + (suppressRed?39:0)))
+  const threshold = Math.min(254, Math.max(0, otsu(gray) + (cleanup === 'contrast' ? 0 : offset) + (suppressRed?39:0)))
   let borderDark = 0, count = 0
   for (let x = 0; x < width; x++) { borderDark += gray[x] <= threshold; borderDark += gray[(height - 1) * width + x] <= threshold; count += 2 }
   for (let y = 0; y < height; y++) { borderDark += gray[y * width] <= threshold; borderDark += gray[y * width + width - 1] <= threshold; count += 2 }
   const light = mode === 'light' || (mode === 'auto' && borderDark > count / 2)
+  if (cleanup === 'contrast') return localContrast(gray, width, height, light, offset)
   const pixels = Uint8Array.from(gray, g => light ? +(g > threshold) : +(g <= threshold))
   if(suppressRed) {
     // Interface borders and isolated compression pixels are not text.
@@ -107,7 +167,7 @@ export function runs(values, minimum = 1) {
   return result
 }
 
-export function segment(binary, spacing = .42) {
+export function segment(binary, spacing = .42, markGap = .16) {
   const { width, height, pixels } = binary
   const rows = new Uint32Array(height)
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) rows[y] += pixels[y * width + x]
@@ -116,7 +176,7 @@ export function segment(binary, spacing = .42) {
   const bands = []
   for (const band of raw) {
     const previous = bands.at(-1)
-    if (previous && band[0] - previous[1] <= Math.max(2, Math.max(band[1] - band[0], previous[1] - previous[0]) * .16)) previous[1] = band[1]
+    if (previous && band[0] - previous[1] <= Math.max(2, Math.max(band[1] - band[0], previous[1] - previous[0]) * markGap)) previous[1] = band[1]
     else bands.push([...band])
   }
   return bands.filter(([a,b]) => b-a >= 3).map(([top, bottom]) => {
@@ -242,12 +302,117 @@ async function getTemplates(id) {
 }
 
 export async function recognize(canvas, options, onProgress = () => {}) {
-  const image = canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height)
+  const context = canvas.getContext('2d')
+  const image = context.getImageData(0, 0, canvas.width, canvas.height)
+  if (options.cleanup === 'contrast') {
+    const result = await recognizeContrast(image, context, options, onProgress)
+    if (result) return result
+  }
+  const automatic = options.cleanup == null || options.cleanup === 'auto'
+  const result = await recognizeImage(image, options, automatic ? value => onProgress(value * .75) : onProgress)
+  if (automatic && result.cleanup === 'plain' && result.confidence < 65 && image.width > image.height * 2) {
+    const enhanced = await recognizeContrast(image, context, { ...options, cleanup: 'contrast' },
+      value => onProgress(75 + value * .25))
+    if (enhanced && enhanced.confidence >= Math.max(65, result.confidence + 5)) return enhanced
+  }
+  if (automatic) onProgress(100)
+  return result
+}
+
+async function recognizeContrast(image, context, options, onProgress) {
+  // Strong strokes locate words. Decode each word again with the normal
+  // threshold so faint strokes can be recovered without merging the row.
+  const seeds = binarize(image, options.polarity, (options.threshold ?? 0) + 8, options.cleanup)
+  const detected = segment(seeds, options.spacing, .06)
+  const tallest = Math.max(0, ...detected.map(line => line[0].height))
+  const bands = detected.filter(line => {
+    const { top, height } = line[0]
+    const touchesEdge = top <= 1 || top + height >= image.height - 5
+    return height >= 12 && (!touchesEdge || height >= tallest * .35)
+  })
+  const regions = []
+  bands.forEach((line, row) => {
+    const { top, height } = line[0]
+    const words = []
+    for (const box of line) {
+      const previous = words.at(-1)
+      if (previous && box.left - previous.right <= height * options.spacing) {
+        previous.right = box.left + box.width
+      } else words.push({ left: box.left, right: box.left + box.width })
+    }
+    const xPad = Math.round(height * .22), yPad = Math.round(height * .09)
+    const y = Math.max(0, top - yPad), bottom = Math.min(image.height, top + height + yPad)
+    words.forEach(({ left, right }, index) => {
+      if (right - left < height * .15) return
+      const previousEdge = words[index - 1]?.right
+      const nextEdge = words[index + 1]?.left
+      const x = Math.max(0, left - xPad, previousEdge == null ? 0 : Math.ceil((previousEdge + left) / 2))
+      const end = Math.min(image.width, right + xPad, nextEdge == null ? image.width : Math.floor((nextEdge + right) / 2))
+      regions.push({ row, x, y, width: end - x, height: bottom - y, cells: [] })
+    })
+  })
+  if (regions.length < 2 || regions.length > 60) return null
+
+  const ranked = [...regions].sort((a, b) => b.width * b.height - a.width * a.height)
+  let fontId = options.fontId
+  let alternatives = []
+  for (const [index, region] of ranked.entries()) {
+    let best = null
+    const extra = Math.max(1, Math.round(region.height * .025))
+    for (const [adjustment, padding] of [[0, 0], [-2, 0], [2, 0], [0, -extra], [0, extra]]) {
+      const top = Math.max(0, region.y - padding)
+      const bottom = Math.min(image.height, region.y + region.height + padding)
+      const word = context.getImageData(region.x, top, region.width, bottom - top)
+      const threshold = (options.threshold ?? 0) + (seeds.polarity === 'light' ? adjustment : -adjustment)
+      let result
+      try {
+        result = await recognizeImage(word, { ...options, fontId, threshold, polarity: seeds.polarity }, () => {})
+      } catch (error) {
+        if (error instanceof NoTextError) continue
+        throw error
+      }
+      const cells = result.lines.reduce((largest, line) => line.length > largest.length ? line : largest, [])
+      const score = cells.reduce((sum, cell) => sum + cell.confidence * Math.min(1, cell.inkHeight / (region.height * .65)), 0) / cells.length
+      if (!best || score > best.score + 1) best = { cells, result, score, word, top }
+      if (fontId === 'auto') {
+        fontId = result.fontId
+        alternatives = result.alternatives
+      }
+    }
+    if (best) {
+      if (!alternatives.length) alternatives = best.result.alternatives
+      const font = await loadFont(fontId)
+      refineLines([best.cells], font.parsed, best.word, seeds.polarity === 'light' ? 1 : -1, true)
+      region.cells = best.cells.map((cell, i) => ({
+        ...cell, left: cell.left + region.x, top: cell.top + best.top, space: i > 0 && cell.space,
+      }))
+    }
+    onProgress(Math.round((index + 1) / ranked.length * 100))
+  }
+
+  const lines = bands.map((_, row) => {
+    const line = []
+    for (const region of regions) {
+      if (region.row !== row || !region.cells.length) continue
+      region.cells[0].space = line.length > 0
+      line.push(...region.cells)
+    }
+    return line
+  }).filter(line => line.length)
+  const cells = lines.flat()
+  if (regions.filter(region => region.cells.length).length < 2) return null
+  const confidence = Math.round(cells.reduce((sum, cell) => sum + cell.confidence, 0) / cells.length)
+  return formatResult({ fontId, lines, error: 1 - confidence / 100 }, 'contrast', confidence, alternatives)
+}
+
+class NoTextError extends Error {}
+
+async function recognizeImage(image, options, onProgress) {
   const binary = binarize(image, options.polarity, options.threshold, options.cleanup)
   const lines = segment(binary, options.spacing)
   const count = lines.reduce((n,line)=>n+line.length,0)
-  if (!count) throw new Error('ไม่พบตัวอักษร ลองครอปให้ชิดข้อความหรือเปลี่ยนสีข้อความ')
-  if (count > 1500) throw new Error('พบรายละเอียดในภาพมากเกินไป กรุณาครอปเฉพาะข้อความ')
+  if (!count) throw new NoTextError('ไม่พบตัวอักษร ลองครอปให้ชิดข้อความหรือเปลี่ยนสีข้อความ')
+  if (count > 1500) throw new NoTextError('พบรายละเอียดในภาพมากเกินไป กรุณาครอปเฉพาะข้อความ')
   const fontIds = options.fontId === 'auto' ? fonts.map(f=>f.id) : [options.fontId]
   const results = []
   const gameCache=new Map()
@@ -311,11 +476,16 @@ export async function recognize(canvas, options, onProgress = () => {}) {
   }
   results.sort((a,b)=>a.error-b.error)
   const best = results[0]
-  if(!best.lines.flat().length)throw new Error('แยกตัวอักษรไม่ได้ ลองครอปเฉพาะข้อความหรือปรับแยกสี')
+  if(!best.lines.flat().length)throw new NoTextError('แยกตัวอักษรไม่ได้ ลองครอปเฉพาะข้อความหรือปรับแยกสี')
   if(binary.cleanup==='game' || binary.framed){
     const font=await loadFont(best.fontId)
     refineLines(best.lines,font.parsed,image,binary.framed ? -1 : 1)
   }
   const confidence=binary.cleanup==='game'?Math.round(best.lines.flat().reduce((sum,c)=>sum+c.confidence,0)/best.lines.flat().length):Math.round((1-best.error)*100)
-  return { ...best, cleanup:binary.cleanup, confidence, text:best.lines.map(line=>line.map(c=>(c.space?' ':'')+c.character).join('')).join('\n'), count:best.lines.flat().length, alternatives:results.map(r=>({fontId:r.fontId,confidence:Math.round((1-r.error)*100)})) }
+  return formatResult(best, binary.cleanup, confidence, results.map(r=>({fontId:r.fontId,confidence:Math.round((1-r.error)*100)})))
+}
+
+function formatResult(result, cleanup, confidence, alternatives) {
+  const text = result.lines.map(line => line.map(cell => (cell.space ? ' ' : '') + cell.character).join('')).join('\n')
+  return { ...result, cleanup, confidence, text, count: result.lines.flat().length, alternatives }
 }

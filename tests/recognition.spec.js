@@ -43,6 +43,37 @@ test('blank image gives a useful error',async({page})=>{
   expect(message).toContain('ไม่พบตัวอักษร')
 })
 
+test('separates words and rows from uneven backgrounds and sign borders', async ({ page }) => {
+  await page.goto('/')
+  const result = await page.evaluate(async () => {
+    const { binarize, segment } = await import('/src/recognition.js')
+    const width = 300, height = 108
+    const glyphs = [[46, 31], [57, 31], [167, 31], [178, 31], [105, 67], [116, 67]]
+    return ['light', 'dark'].map(polarity => {
+      const data = new Uint8ClampedArray(width * height * 4)
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const ink = glyphs.some(([left, top]) => x >= left && x < left + 7 && y >= top && y < top + 15)
+          const border = x < 3 || x >= width - 3 || y >= height - 4
+          const shade = 25 + x * .23 + y * .1 + (ink ? 27 : 0) + (border ? 44 : 0)
+          const intensity = polarity === 'light' ? shade : 255 - shade
+          const index = 4 * (y * width + x)
+          data.fill(intensity, index, index + 3)
+          data[index + 3] = 255
+        }
+      }
+      const image = { width, height, data }
+      const lines = segment(binarize(image, polarity, 0, 'contrast'))
+      return lines.map(line => line.map(({ left, top, space }) => [left, top, space]))
+    })
+  })
+  const lines = [
+    [[46, 31, false], [57, 31, false], [167, 31, true], [178, 31, false]],
+    [[105, 67, false], [116, 67, false]],
+  ]
+  expect(result).toEqual([lines, lines])
+})
+
 test('sample flow, manual edits, copy, download and alphabet navigation',async({page,context})=>{
   const errors=[];page.on('pageerror',e=>errors.push(e.message))
   await context.grantPermissions(['clipboard-read','clipboard-write'])

@@ -45,7 +45,7 @@ function outline(glyph) {
   return {rows,cols,ratio:width/height,weights:Float32Array.from(mask,v=>(v-mean)/norm)}
 }
 
-export function refineLines(lines, font, image, polarity = 1) {
+export function refineLines(lines, font, image, polarity = 1, blend = false) {
   if(!cache.has(font)){
     const shapes=[]
     for(const ch of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'){
@@ -79,11 +79,16 @@ export function refineLines(lines, font, image, polarity = 1) {
           best=Math.max(best,score)
         }
       }
+      if (blend) {
+        const binaryMatch = cell.candidates.find(candidate => candidate.character.toUpperCase() === shape.ch)
+        if (!binaryMatch) continue
+        best = best * .72 + (1 - binaryMatch.error) * .28
+      }
       matches.push({character:shape.ch,score:best})
     }
     matches.sort((a,b)=>b.score-a.score)
     if(matches[0]?.score>.32){
-      cell.character=matches[0].character
+      cell.character=blend && cell.character.toUpperCase() === matches[0].character ? cell.character : matches[0].character
       cell.candidates=matches.slice(0,5).map(m=>({character:m.character,error:1-m.score}))
       cell.confidence=Math.round(100*matches[0].score)
       cell.equivalent=[cell.character]
