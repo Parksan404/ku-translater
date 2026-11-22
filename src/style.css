@@ -280,6 +280,8 @@ summary { cursor: pointer; font-weight: 600; }
 .word-suggestions > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
 .word-suggestions > div > span { overflow-wrap: anywhere; }
 .word-suggestions .button { min-height: 32px; padding: 4px 9px; color: var(--accent); }
+.suggested-text { margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
+.word-check-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 10px; color: var(--muted); font-size: 13px; }
 .raw-output pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .progress-track { width: 160px; height: 5px; border-radius: 10px; background: var(--line); margin-top: 14px; overflow: hidden; }
 .progress-track > div { height: 100%; background: var(--accent-fill); }

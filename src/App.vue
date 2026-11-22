@@ -13,6 +13,7 @@ const dragOver = ref(false), cropMode = ref(false), crop = ref(null), dragStart 
 const alphabetFont = ref(fonts[0].id), sampleText = ref('HELLO SOLARIS'), selectedGlyph = ref(null), notice = ref('')
 const supported = ref({})
 const cleanup = ref('auto'), wordSuggestions = ref([]), rawOutput = ref('')
+const suggestionStatus = ref('idle')
 const systemTheme = window.matchMedia('(prefers-color-scheme: dark)')
 const theme = ref(document.documentElement.dataset.theme)
 let selectedTheme = document.documentElement.dataset.themePreference
@@ -23,12 +24,22 @@ const pages = {
   guide: { label: 'วิธีใช้งาน', icon: CircleHelp },
 }
 let generation = 0
+let suggestionRequest = 0
 const alphabet = computed(()=> 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'.split(''))
 const chosenFont = computed(()=> fonts.find(f=>f.id === (result.value?.fontId || alphabetFont.value)))
 const cropStyle = computed(()=> crop.value && source.value ? { left:`${crop.value.x/source.value.width*100}%`,top:`${crop.value.y/source.value.height*100}%`,width:`${crop.value.w/source.value.width*100}%`,height:`${crop.value.h/source.value.height*100}%` } : {})
 const lowConfidence = computed(()=> result.value?.lines.flat().filter(c=>c.confidence<75).length || 0)
 const structuredText = computed(()=>result.value?.lines.map(line=>line.map(c=>(c.space?' ':'')+c.character).join('')).join('\n') || '')
 const manuallyEdited = computed(()=>!!result.value && output.value!==structuredText.value)
+const suggestedText = computed(() => {
+  let text = output.value
+  for (const { original, index, replacements } of [...wordSuggestions.value].reverse()) {
+    if (text.slice(index, index + original.length) === original) {
+      text = text.slice(0, index) + replacements[0] + text.slice(index + original.length)
+    }
+  }
+  return text
+})
 const hasGlyph = char => supported.value[alphabetFont.value]?.includes(char)
 
 onMounted(async()=> {
@@ -60,7 +71,7 @@ function toggleTheme() {
   try { localStorage.setItem('ku-translate-theme', selectedTheme) } catch { /* Keep the theme for this session. */ }
 }
 
-function clearResult() { generation++; result.value=null; output.value=''; selectedGlyph.value=null; error.value='';wordSuggestions.value=[];rawOutput.value='' }
+function clearResult() { generation++; result.value=null; output.value=''; selectedGlyph.value=null; error.value='';resetWordSuggestions();rawOutput.value='' }
 async function setImage(blob, name) {
   if (busy.value) return
   if (!blob.type.startsWith('image/')) { error.value='เลือกไฟล์รูปภาพ PNG, JPG หรือ WebP'; return }
@@ -101,7 +112,7 @@ function endCrop() {dragStart.value=null;if(crop.value&&(crop.value.w<5||crop.va
 function resetCrop() {if(busy.value)return;crop.value=null;cropMode.value=false;clearResult()}
 async function run() {
   if(!source.value||busy.value)return
-  busy.value=true;error.value='';progress.value=0;result.value=null;output.value='';selectedGlyph.value=null;wordSuggestions.value=[];rawOutput.value=''
+  busy.value=true;error.value='';progress.value=0;result.value=null;output.value='';selectedGlyph.value=null;resetWordSuggestions();rawOutput.value=''
   const current=++generation
   try {
     await new Promise(resolve=>setTimeout(resolve,20))
@@ -112,25 +123,47 @@ async function run() {
     const value=await recognize(canvas,{fontId:fontId.value,polarity:polarity.value,threshold:Number(threshold.value),spacing:Number(spacing.value),cleanup:cleanup.value},v=>progress.value=v)
     if (current !== generation) return
     result.value=value;output.value=value.text;rawOutput.value=value.text
-    await refreshWordSuggestions()
+    refreshWordSuggestions()
   }catch(e){if(current===generation)error.value=e.message}finally{busy.value=false}
 }
+function resetWordSuggestions() {
+  suggestionRequest++
+  wordSuggestions.value = []
+  suggestionStatus.value = 'idle'
+}
+function editOutput() {
+  selectedGlyph.value = null
+  resetWordSuggestions()
+}
 async function refreshWordSuggestions() {
-  const current = generation
+  const request = ++suggestionRequest
   const text = output.value
+  wordSuggestions.value = []
+  suggestionStatus.value = 'searching'
   try {
-    const suggestions = await suggestWords(text, result.value?.lines)
-    if (current === generation && output.value === text) wordSuggestions.value = suggestions
-  } catch { /* The decoded text remains available if the dictionary fails to load. */ }
+    const suggestions = await suggestWords(text, manuallyEdited.value ? undefined : result.value?.lines)
+    if (request !== suggestionRequest) return
+    wordSuggestions.value = suggestions
+    suggestionStatus.value = suggestions.length ? 'ready' : 'empty'
+  } catch {
+    if (request === suggestionRequest) suggestionStatus.value = 'failed'
+  }
 }
 function applySuggestion(suggestion, replacement) {
-  if(output.value.slice(suggestion.index,suggestion.index+suggestion.original.length)!==suggestion.original){wordSuggestions.value=[];return}
+  if(output.value.slice(suggestion.index,suggestion.index+suggestion.original.length)!==suggestion.original){resetWordSuggestions();return}
   output.value=output.value.slice(0,suggestion.index)+replacement+output.value.slice(suggestion.index+suggestion.original.length)
   selectedGlyph.value=null
   const change = replacement.length - suggestion.original.length
   wordSuggestions.value = wordSuggestions.value.filter(item => item !== suggestion).map(item =>
     item.index > suggestion.index ? { ...item, index: item.index + change } : item,
   )
+  if (!wordSuggestions.value.length) suggestionStatus.value = 'applied'
+}
+function applySuggestedText() {
+  output.value = suggestedText.value
+  selectedGlyph.value = null
+  resetWordSuggestions()
+  suggestionStatus.value = 'applied'
 }
 async function copy() {try{await navigator.clipboard.writeText(output.value);copied.value=true;setTimeout(()=>copied.value=false,2000)}catch{notice.value='คัดลอกไม่ได้ กรุณาเลือกข้อความแล้วกด Ctrl+C'}}
 function download() {
@@ -142,7 +175,6 @@ function replaceGlyph(character) {
   cell.character=character
   output.value=result.value.lines.map(line=>line.map(c=>(c.space?' ':'')+c.character).join('')).join('\n')
   selectedGlyph.value=null
-  wordSuggestions.value=[]
   refreshWordSuggestions()
 }
 </script>
@@ -192,7 +224,30 @@ function replaceGlyph(character) {
             <section class="panel result-panel">
               <div class="panel-heading"><div><span class="section-icon"><Languages :size="18"/></span><h2>ข้อความที่อ่านได้</h2></div><span class="result-tag" :class="{ready:result}"><span></span>{{result?'ถอดข้อความแล้ว':'รอการถอดข้อความ'}}</span></div>
               <div v-if="!result" class="result-empty"><div class="result-illustration" aria-hidden="true"><span :style="{fontFamily:`'${fonts[0].id}'`}">A</span><ArrowRight :size="23"/><span>A</span></div><h3>{{busy?'กำลังเทียบรูปทรงตัวอักษร…':'ผลลัพธ์จะแสดงที่นี่'}}</h3><p>{{busy?'ประมวลผลจากฟอนต์ในเครื่องของคุณ':'เพิ่มรูปภาพแล้วกดถอดข้อความจากภาพ'}}</p><div v-if="busy" class="progress-track"><div :style="{width:`${progress}%`}"></div></div></div>
-              <div v-else class="result-content"><div v-if="result.cleanup==='game'" class="game-notice">แยกพื้นหลังสีแล้ว · ภาพเบลออาจอ่านผิด โปรดตรวจตัวอักษรสีส้ม</div><div class="result-metrics"><span><i></i>{{chosenFont?.name}}</span><span :class="{warning:result.confidence<75}">ตรงกับต้นแบบ {{result.confidence}}%</span></div><label class="sr-only" for="output">ข้อความที่ถอดได้ แก้ไขได้</label><textarea id="output" v-model="output" @input="selectedGlyph=null;wordSuggestions=[]" spellcheck="false" placeholder="ข้อความที่อ่านได้"/><div v-if="wordSuggestions.length" class="word-suggestions"><strong>คำที่อาจเป็นไปได้ — เป็นการคาดเดา ไม่ใช่ผลอ่านยืนยัน</strong><div v-for="suggestion in wordSuggestions" :key="suggestion.index"><span>{{suggestion.original}}</span><button v-for="replacement in suggestion.replacements" :key="replacement" class="button" :disabled="busy" @click="applySuggestion(suggestion, replacement)">{{replacement}}</button></div></div><details v-if="output!==rawOutput" class="raw-output"><summary>ดูข้อความดิบก่อนแก้ไข</summary><pre>{{rawOutput}}</pre></details><div class="review-info">แก้ไขข้อความได้ · {{result.count}} ตัวอักษร <span v-if="lowConfidence">· {{lowConfidence}} ตัวควรตรวจสอบ</span></div><details class="review"><summary>ตรวจสอบตัวอักษรทีละตัว</summary><p>{{manuallyEdited?'แก้ไขข้อความด้วยมือแล้ว ใช้ช่องข้อความด้านบนเพื่อแก้ไขต่อ':'แตะตัวอักษรเพื่อเลือกคำตอบอื่น สีส้ม = ความตรงต่ำกว่า 75%'}}</p><div v-for="(line,index) in result.lines" :key="index" class="glyph-line"><button v-for="(cell,i) in line" :key="i" :disabled="manuallyEdited" :class="{uncertain:cell.confidence<75,spaced:cell.space}" :title="`ความตรง ${cell.confidence}%${cell.equivalent.length>1?' · รูปทรงเหมือนกัน: '+cell.equivalent.join('/'):''}`" @click="selectedGlyph=cell">{{cell.character}}</button></div><div v-if="selectedGlyph" class="candidate-list"><span>เลือกตัวอักษร</span><button v-for="candidate in selectedGlyph.candidates" :key="candidate.character" @click="replaceGlyph(candidate.character)">{{candidate.character}} <small>{{Math.round((1-candidate.error)*100)}}%</small></button><button aria-label="ปิดตัวเลือก" @click="selectedGlyph=null"><X :size="13"/></button></div></details><p class="accuracy-note">เปอร์เซ็นต์คือความตรงกับรูปทรงต้นแบบ ไม่ใช่การรับประกันความถูกต้อง ฟอนต์บางแบบใช้รูปเดียวกันสำหรับ A/a</p></div>
+              <div v-else class="result-content"><div v-if="result.cleanup==='game'" class="game-notice">แยกพื้นหลังสีแล้ว · ภาพเบลออาจอ่านผิด โปรดตรวจตัวอักษรสีส้ม</div><div class="result-metrics"><span><i></i>{{chosenFont?.name}}</span><span :class="{warning:result.confidence<75}">ตรงกับต้นแบบ {{result.confidence}}%</span></div><div v-if="wordSuggestions.length" class="word-suggestions" aria-label="คำแนะนำจากพจนานุกรม">
+                  <strong>คำที่น่าจะใช่</strong>
+                  <template v-if="wordSuggestions.length > 1">
+                    <pre class="suggested-text">{{ suggestedText }}</pre>
+                    <button type="button" class="button" @click="applySuggestedText">ใช้คำแนะนำทั้งหมด</button>
+                  </template>
+                  <div v-for="suggestion in wordSuggestions" :key="suggestion.index">
+                    <span>{{ suggestion.original }}</span>
+                    <button v-for="replacement in suggestion.replacements" :key="replacement" type="button"
+                      class="button" @click="applySuggestion(suggestion, replacement)">{{ replacement }}</button>
+                  </div>
+                </div>
+                <div v-else class="word-check-actions">
+                  <span v-if="suggestionStatus === 'searching'" role="status">กำลังเดาคำจากพจนานุกรม…</span>
+                  <template v-else>
+                    <button type="button" class="text-button" :disabled="!output.trim()" @click="refreshWordSuggestions">
+                      <Sparkles :size="15" /> เดาคำจากผลอ่าน
+                    </button>
+                    <span v-if="suggestionStatus === 'empty'" role="status">ไม่มีคำแนะนำเพิ่มเติม</span>
+                    <span v-if="suggestionStatus === 'failed'" role="status">โหลดพจนานุกรมไม่สำเร็จ ลองอีกครั้ง</span>
+                  </template>
+                </div>
+                <label class="sr-only" for="output">ข้อความที่ถอดได้ แก้ไขได้</label>
+                <textarea id="output" v-model="output" @input="editOutput" spellcheck="false" placeholder="ข้อความที่อ่านได้"/><details v-if="output!==rawOutput" class="raw-output"><summary>ดูข้อความดิบก่อนแก้ไข</summary><pre>{{rawOutput}}</pre></details><div class="review-info">แก้ไขข้อความได้ · {{result.count}} ตัวอักษร <span v-if="lowConfidence">· {{lowConfidence}} ตัวควรตรวจสอบ</span></div><details class="review"><summary>ตรวจสอบตัวอักษรทีละตัว</summary><p>{{manuallyEdited?'แก้ไขข้อความด้วยมือแล้ว ใช้ช่องข้อความด้านบนเพื่อแก้ไขต่อ':'แตะตัวอักษรเพื่อเลือกคำตอบอื่น สีส้ม = ความตรงต่ำกว่า 75%'}}</p><div v-for="(line,index) in result.lines" :key="index" class="glyph-line"><button v-for="(cell,i) in line" :key="i" :disabled="manuallyEdited" :class="{uncertain:cell.confidence<75,spaced:cell.space}" :title="`ความตรง ${cell.confidence}%${cell.equivalent.length>1?' · รูปทรงเหมือนกัน: '+cell.equivalent.join('/'):''}`" @click="selectedGlyph=cell">{{cell.character}}</button></div><div v-if="selectedGlyph" class="candidate-list"><span>เลือกตัวอักษร</span><button v-for="candidate in selectedGlyph.candidates" :key="candidate.character" @click="replaceGlyph(candidate.character)">{{candidate.character}} <small>{{Math.round((1-candidate.error)*100)}}%</small></button><button aria-label="ปิดตัวเลือก" @click="selectedGlyph=null"><X :size="13"/></button></div></details><p class="accuracy-note">เปอร์เซ็นต์คือความตรงกับรูปทรงต้นแบบ ไม่ใช่การรับประกันความถูกต้อง ฟอนต์บางแบบใช้รูปเดียวกันสำหรับ A/a</p></div>
               <div class="result-toolbar"><span>{{output.length}} อักขระ <span v-if="result">· {{output.split('\n').length}} บรรทัด</span></span><div><button class="icon-button" :disabled="!output" aria-label="ดาวน์โหลดข้อความ" title="ดาวน์โหลด .txt" @click="download"><Download :size="17"/></button><button class="button copy-button" :disabled="!output" @click="copy"><Check v-if="copied" :size="15"/><Copy v-else :size="15"/>{{copied?'คัดลอกแล้ว':'คัดลอก'}}</button></div></div>
               <div class="tip-box"><span class="tip-icon"><Sparkles :size="17"/></span><div><strong>ภาพชัดขึ้น อ่านได้แม่นขึ้น</strong><p>ครอปให้เหลือเฉพาะข้อความ ใช้ภาพตรง และสีตัดกับพื้นหลัง</p></div></div>
             </section>
